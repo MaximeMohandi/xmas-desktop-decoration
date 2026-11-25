@@ -45,6 +45,9 @@ pub(crate) static SCENES: [&[Piece]; 8] = [
 pub(crate) static TB_LEFT: [Piece; 3] = [pc(Tree(1), 1.0, 0.0), pc(Ico(37), 0.55, -0.52), pc(Ico(20), 0.55, 0.55)]; // sapin, lanterne, maison
 pub(crate) static TB_RIGHT: [Piece; 2] = [pc(Chr(0), 1.0, 0.0), pc(Ico(4), 0.30, -0.50)]; // bonhomme de neige, cadeau
 
+/// Scènes qui remplissent le milieu d'un long terrain (plusieurs écrans), dans l'ordre: toutes différentes des extrémités.
+pub(crate) static TB_MIDDLE: [usize; 6] = [2, 4, 3, 5, 1, 6]; // indices dans SCENES: forêt, maison douce, pôle, cheminée, cadeaux, clôture
+
 /// Pièces isolées (un seul accent) pour les fenêtres: un seul accent, jamais une scène complète.
 pub(crate) static ACCENTS: [(Src, f32); 16] = [
     (Ico(18), 0.60), // canne en sucre

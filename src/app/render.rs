@@ -272,10 +272,21 @@ impl App {
         // et le père Noël le traverse d'un bout à l'autre.
         if let Some((tl, tr)) = self.taskbar_span() {
             if self.cfg.decor {
-                for (frac, pieces, hh, mirror) in [(0.11, &TB_LEFT[..], 96.0, false), (0.82, &TB_RIGHT[..], 74.0, true)] {
+                // Une scène tous les ~700 px: le sapin à gauche, le bonhomme de neige à droite, et entre les deux
+                // des scènes différentes (jamais la même deux fois de suite).
+                let n = (((tr - tl) / 700.0).round() as usize).clamp(2, 10);
+                for i in 0..n {
+                    let frac = 0.11 + (0.82 - 0.11) * i as f32 / (n - 1) as f32;
                     let x = tl + (tr - tl) * frac;
+                    let (pieces, hh): (&[Piece], f32) = if i == 0 {
+                        (&TB_LEFT, 96.0)
+                    } else if i == n - 1 {
+                        (&TB_RIGHT, 74.0)
+                    } else {
+                        (SCENES[TB_MIDDLE[(i - 1) % TB_MIDDLE.len()]], 76.0 + ((i * 7) % 3) as f32 * 8.0)
+                    };
                     if let Some(a) = self.taskbar_at(x).filter(|a| near(a)) {
-                        self.draw_scene(pieces, 0, x, a.t + 2.0, hh, mirror, 1.0, a.z, a.t + 2.0);
+                        self.draw_scene(pieces, i as u32, x, a.t + 2.0, hh, i % 2 == 1 || i == n - 1, 1.0, a.z, a.t + 2.0);
                     }
                 }
             }
