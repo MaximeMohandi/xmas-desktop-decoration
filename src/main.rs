@@ -19,6 +19,8 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Registry::*;
+use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -34,6 +36,81 @@ const ID_TOGGLE: usize = 1001;
 const ID_QUIT: usize = 1002;
 const ID_SANTA: usize = 1003;
 const ID_SLEIGH: usize = 1004;
+const ID_SNOW0: usize = 1010; // 1010..=1013: aucune, légère, normale, forte
+const ID_DECOR: usize = 1020;
+const ID_AUTO: usize = 1021;
+const ID_STARTUP: usize = 1022;
+
+/// Réglages mémorisés dans `sneakyxmas.ini` (à côté de l'exécutable).
+#[derive(Clone, Copy)]
+struct Settings {
+    active: bool,
+    snow: usize, // 0 aucune, 1 légère, 2 normale, 3 forte
+    decor: bool,
+    auto_chars: bool, // Père Noël et traîneau qui passent d'eux-mêmes
+}
+const SNOW_COUNT: [usize; 4] = [0, 90, 220, 400];
+
+impl Settings {
+    fn path() -> std::path::PathBuf {
+        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("sneakyxmas.ini"))).unwrap_or_else(|| "sneakyxmas.ini".into())
+    }
+    fn load() -> Settings {
+        let mut c = Settings { active: true, snow: 2, decor: true, auto_chars: true };
+        if let Ok(txt) = std::fs::read_to_string(Self::path()) {
+            for line in txt.lines() {
+                let Some((k, v)) = line.split_once('=') else { continue };
+                let (k, v) = (k.trim(), v.trim());
+                let b = v == "1" || v.eq_ignore_ascii_case("true");
+                match k {
+                    "active" => c.active = b,
+                    "snow" => c.snow = v.parse::<usize>().unwrap_or(2).min(3),
+                    "decor" => c.decor = b,
+                    "auto_chars" => c.auto_chars = b,
+                    _ => {}
+                }
+            }
+        }
+        c
+    }
+    fn save(&self) {
+        let txt = format!("active={}\nsnow={}\ndecor={}\nauto_chars={}\n", self.active as u8, self.snow, self.decor as u8, self.auto_chars as u8);
+        let _ = std::fs::write(Self::path(), txt);
+    }
+}
+
+const RUN_KEY: windows::core::PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+
+fn startup_enabled() -> bool {
+    unsafe {
+        let mut k = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_READ, &mut k).is_err() {
+            return false;
+        }
+        let r = RegQueryValueExW(k, w!("sneakyXmas"), None, None, None, None).is_ok();
+        let _ = RegCloseKey(k);
+        r
+    }
+}
+
+fn set_startup(on: bool) {
+    unsafe {
+        let mut k = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_WRITE, &mut k).is_err() {
+            return;
+        }
+        if on {
+            if let Ok(exe) = std::env::current_exe() {
+                let v: Vec<u16> = format!("\"{}\"", exe.display()).encode_utf16().chain(std::iter::once(0)).collect();
+                let bytes = std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 2);
+                let _ = RegSetValueExW(k, w!("sneakyXmas"), 0, REG_SZ, Some(bytes));
+            }
+        } else {
+            let _ = RegDeleteValueW(k, w!("sneakyXmas"));
+        }
+        let _ = RegCloseKey(k);
+    }
+}
 
 struct Flake {
     x: f32,
@@ -435,6 +512,7 @@ struct App {
     rng: Rng,
     t: f32,
     active: bool,
+    cfg: Settings,
     hidden_for_fullscreen: bool,
     ticks: u32,
     last: Instant,
@@ -513,7 +591,7 @@ impl App {
             dcomp.Commit()?;
 
             let mut rng = Rng(0x2545F4914F6CDD1D);
-            let flakes = (0..220)
+            let flakes = (0..400)
                 .map(|_| Flake {
                     x: rng.next() * w as f32,
                     y: rng.next() * h as f32,
@@ -553,6 +631,7 @@ impl App {
                 rng,
                 t: 0.0,
                 active: true,
+                cfg: Settings::load(),
                 hidden_for_fullscreen: false,
                 ticks: 0,
                 last: Instant::now(),
@@ -689,7 +768,8 @@ impl App {
 
         self.t += dt;
         self.update_characters(dt);
-        for f in &mut self.flakes {
+        let nflakes = SNOW_COUNT[self.cfg.snow.min(3)];
+        for f in self.flakes.iter_mut().take(nflakes) {
             let prev_y = f.y;
             f.y += f.speed * dt;
             f.x += (self.t * 0.8 + f.phase).sin() * 20.0 * dt;
@@ -787,7 +867,7 @@ impl App {
                         }
                     }
                 }
-                None if self.t >= self.next_santa => {
+                None if self.t >= self.next_santa && (self.cfg.auto_chars || self.next_santa == 0.0) => {
                     self.santa_x = Some(al - 60.0);
                     self.santa_dist = 0.0;
                     self.santa_pause = 0.0;
@@ -807,7 +887,7 @@ impl App {
                     self.sleigh = Some((nx, dir));
                 }
             }
-            None if self.t >= self.next_sleigh => {
+            None if self.t >= self.next_sleigh && (self.cfg.auto_chars || self.next_sleigh == 0.0) => {
                 let dir = if self.rng.next() < 0.5 { 1.0 } else { -1.0 };
                 self.sleigh = Some((if dir > 0.0 { -500.0 } else { self.w + 500.0 }, dir));
             }
@@ -1076,8 +1156,10 @@ impl App {
             self.ctx.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
             if let Some(a) = self.anchors.get(&0) {
                 let width = a.r - a.l;
+                if self.cfg.decor {
                 self.draw_scene(&TB_LEFT, 0, a.l + width * 0.11, a.t + 2.0, 96.0, false, 1.0, a.z, a.t - 10.0);
                 self.draw_scene(&TB_RIGHT, 0, a.l + width * 0.82, a.t + 2.0, 74.0, true, 1.0, a.z, a.t - 10.0);
+                }
                 if let Some(sx) = self.santa_x {
                     if !covered(&self.wins, a.z, sx, a.t - 10.0) {
                         self.draw_santa(sx, a.t - 1.0);
@@ -1087,7 +1169,7 @@ impl App {
             // Fenêtres: chacune garde la décoration tirée à sa création (scène ou accent), quand elle est immobile.
             for (key, a) in self.anchors.iter() {
                 let width = a.r - a.l;
-                if *key == 0 || a.deco < 0.02 || width < 150.0 {
+                if !self.cfg.decor || *key == 0 || a.deco < 0.02 || width < 150.0 {
                     continue;
                 }
                 let hh = a.hh;
@@ -1103,7 +1185,7 @@ impl App {
                 }
             }
             let nw = self.wins.len();
-            for f in &self.flakes {
+            for f in self.flakes.iter().take(SNOW_COUNT[self.cfg.snow.min(3)]) {
                 // Un flocon n'est visible que sur le bureau: jamais devant une fenêtre (ni la barre des tâches).
                 if covered(&self.wins, Some(nw), f.x, f.y) {
                     continue;
@@ -1219,13 +1301,24 @@ fn remove_tray(hwnd: HWND) {
     }
 }
 
-fn show_menu(hwnd: HWND, active: bool) {
+fn show_menu(hwnd: HWND, cfg: Settings) {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
-        let flags = if active { MF_STRING | MF_CHECKED } else { MF_STRING };
-        let _ = AppendMenuW(menu, flags, ID_TOGGLE, w!("Mode Noël"));
+        let Ok(snow) = CreatePopupMenu() else { return };
+        let chk = |on: bool| if on { MF_STRING | MF_CHECKED } else { MF_STRING };
+        let names = [w!("Aucune"), w!("Légère"), w!("Normale"), w!("Forte")];
+        for (i, n) in names.iter().enumerate() {
+            let _ = AppendMenuW(snow, chk(cfg.snow == i), ID_SNOW0 + i, *n);
+        }
+        let _ = AppendMenuW(menu, chk(cfg.active), ID_TOGGLE, w!("Mode Noël"));
+        let _ = AppendMenuW(menu, MF_POPUP, snow.0 as usize, w!("Neige"));
+        let _ = AppendMenuW(menu, chk(cfg.decor), ID_DECOR, w!("Décorations"));
+        let _ = AppendMenuW(menu, chk(cfg.auto_chars), ID_AUTO, w!("Père Noël et traîneau automatiques"));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, ID_SANTA, w!("Lancer le Père Noël"));
         let _ = AppendMenuW(menu, MF_STRING, ID_SLEIGH, w!("Lancer le traîneau"));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+        let _ = AppendMenuW(menu, chk(startup_enabled()), ID_STARTUP, w!("Lancer avec Windows"));
         let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, w!("Quitter"));
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
@@ -1239,8 +1332,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     match msg {
         WM_TRAY => {
             if (lp.0 as u32) == WM_RBUTTONUP || (lp.0 as u32) == WM_CONTEXTMENU {
-                let active = APP.with(|a| a.borrow().as_ref().map(|x| x.active).unwrap_or(false));
-                show_menu(hwnd, active);
+                let cfg = APP.with(|a| a.borrow().as_ref().map(|x| x.cfg));
+                if let Some(cfg) = cfg {
+                    show_menu(hwnd, cfg);
+                }
             }
             LRESULT(0)
         }
@@ -1249,9 +1344,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 ID_TOGGLE => APP.with(|a| {
                     if let Some(app) = a.borrow_mut().as_mut() {
                         app.active = !app.active;
+                        app.cfg.active = app.active;
+                        app.cfg.save();
                         app.apply_visibility();
                     }
                 }),
+                id @ (ID_DECOR | ID_AUTO | ID_SNOW0..=1013) => APP.with(|a| {
+                    if let Some(app) = a.borrow_mut().as_mut() {
+                        match id {
+                            ID_DECOR => app.cfg.decor = !app.cfg.decor,
+                            ID_AUTO => app.cfg.auto_chars = !app.cfg.auto_chars,
+                            _ => app.cfg.snow = id - ID_SNOW0,
+                        }
+                        app.cfg.save();
+                    }
+                }),
+                ID_STARTUP => set_startup(!startup_enabled()),
                 ID_SANTA | ID_SLEIGH => {
                     let which = wp.0 & 0xFFFF;
                     APP.with(|a| {
@@ -1289,6 +1397,11 @@ fn main() {
 fn run() -> Result<()> {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        // Instance unique: si une autre tourne déjà, on s'efface.
+        let _guard = CreateMutexW(None, true, w!("Local\\sneakyXmas-instance"))?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            return Ok(());
+        }
         let hinst = GetModuleHandleW(None)?;
         let class = w!("SneakyXmasOverlay");
         let wc = WNDCLASSW {
@@ -1321,7 +1434,8 @@ fn run() -> Result<()> {
             None,
         )?;
 
-        let app = App::new(hwnd, w, h)?;
+        let mut app = App::new(hwnd, w, h)?;
+        app.active = app.cfg.active;
         APP.with(|a| *a.borrow_mut() = Some(app));
         add_tray(hwnd);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
