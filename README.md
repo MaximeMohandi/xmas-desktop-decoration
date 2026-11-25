@@ -1,5 +1,7 @@
 # 🎄 sneakyXmas
 
+🇫🇷 Français · [🇬🇧 English](README.en.md)
+
 **Noël s'invite discrètement sur ton bureau Windows 11.**
 
 sneakyXmas est une petite application résidente qui pose par-dessus ton bureau une couche de magie hivernale : la neige tombe, s'accumule doucement sur la barre des tâches et sur le bord de tes fenêtres, des petites scènes de Noël s'installent comme dans un village miniature, le Père Noël se promène sur la barre des tâches et son traîneau traverse l'écran.
