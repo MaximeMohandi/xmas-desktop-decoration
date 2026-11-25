@@ -31,6 +31,9 @@ pub(crate) struct App {
     pub(crate) pen: ID2D1SolidColorBrush,
     pub(crate) draw_failed: bool,
     /// Géométries des tas: recalculées quand leur forme change, au plus 5 fois par seconde.
+    /// Plan de décoration de la barre des tâches (recalculé quand la longueur du terrain change).
+    pub(crate) tb_plan: Vec<TbItem>,
+    pub(crate) tb_plan_len: f32,
     pub(crate) pile_cache: RefCell<HashMap<isize, (u64, f32, Vec<(ID2D1PathGeometry, ID2D1PathGeometry)>)>>,
     pub(crate) factory: ID2D1Factory1,
     pub(crate) round: ID2D1StrokeStyle,
@@ -132,6 +135,8 @@ impl App {
                 brush,
                 pen,
                 draw_failed: false,
+                tb_plan: Vec::new(),
+                tb_plan_len: 0.0,
                 pile_cache: RefCell::new(HashMap::new()),
                 factory: d2d_factory,
                 round,

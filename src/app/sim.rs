@@ -46,6 +46,13 @@ impl App {
         }
         // Barre masquée ou débranchée: plus d'accumulation.
         self.anchors.retain(|k, _| *k > 0 || live.contains(k));
+        // Le plan de décoration suit la longueur du terrain.
+        if let Some((l, r)) = self.taskbar_span() {
+            if ((r - l) - self.tb_plan_len).abs() > 0.5 {
+                self.tb_plan = plan_terrain(r - l);
+                self.tb_plan_len = r - l;
+            }
+        }
     }
 
     /// Met à jour l'ancre d'une barre des tâches posée en bas de son écran. Faux si elle est masquée ou ailleurs.
