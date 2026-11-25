@@ -26,7 +26,6 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const COL_W: f32 = 2.0; // largeur d'une colonne de neige accumulée
-const PILE_MAX: f32 = 12.0;
 const BUMP_SIGMA: f32 = 5.0; // largeur (en colonnes) de la bosse déposée par un flocon
 const BUMP_AMP: f32 = 0.5; // hauteur (px) de cette bosse
 const REPOSE: f32 = 1.0; // pente maximale entre colonnes voisines (angle d'éboulement)
@@ -40,6 +39,8 @@ const ID_SNOW0: usize = 1010; // 1010..=1013: aucune, légère, normale, forte
 const ID_DECOR: usize = 1020;
 const ID_AUTO: usize = 1021;
 const ID_STARTUP: usize = 1022;
+const ID_FREQ0: usize = 1030; // 1030..=1032: rare, normal, fréquent
+const ID_PILE0: usize = 1040; // 1040..=1042: fine, normale, épaisse
 
 /// Réglages mémorisés dans `sneakyxmas.ini` (à côté de l'exécutable).
 #[derive(Clone, Copy)]
@@ -48,15 +49,19 @@ struct Settings {
     snow: usize, // 0 aucune, 1 légère, 2 normale, 3 forte
     decor: bool,
     auto_chars: bool, // Père Noël et traîneau qui passent d'eux-mêmes
+    freq: usize, // fréquence des passages: 0 rare, 1 normal, 2 fréquent
+    pile: usize, // épaisseur max de la neige accumulée: 0 fine, 1 normale, 2 épaisse
 }
 const SNOW_COUNT: [usize; 4] = [0, 90, 220, 400];
+const FREQ_MUL: [f32; 3] = [2.0, 1.0, 0.4]; // multiplie le délai entre deux passages
+const PILE_MAXS: [f32; 3] = [6.0, 12.0, 20.0];
 
 impl Settings {
     fn path() -> std::path::PathBuf {
         std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("sneakyxmas.ini"))).unwrap_or_else(|| "sneakyxmas.ini".into())
     }
     fn load() -> Settings {
-        let mut c = Settings { active: true, snow: 2, decor: true, auto_chars: true };
+        let mut c = Settings { active: true, snow: 2, decor: true, auto_chars: true, freq: 1, pile: 1 };
         if let Ok(txt) = std::fs::read_to_string(Self::path()) {
             for line in txt.lines() {
                 let Some((k, v)) = line.split_once('=') else { continue };
@@ -67,6 +72,8 @@ impl Settings {
                     "snow" => c.snow = v.parse::<usize>().unwrap_or(2).min(3),
                     "decor" => c.decor = b,
                     "auto_chars" => c.auto_chars = b,
+                    "freq" => c.freq = v.parse::<usize>().unwrap_or(1).min(2),
+                    "pile" => c.pile = v.parse::<usize>().unwrap_or(1).min(2),
                     _ => {}
                 }
             }
@@ -74,7 +81,7 @@ impl Settings {
         c
     }
     fn save(&self) {
-        let txt = format!("active={}\nsnow={}\ndecor={}\nauto_chars={}\n", self.active as u8, self.snow, self.decor as u8, self.auto_chars as u8);
+        let txt = format!("active={}\nsnow={}\ndecor={}\nauto_chars={}\nfreq={}\npile={}\n", self.active as u8, self.snow, self.decor as u8, self.auto_chars as u8, self.freq, self.pile);
         let _ = std::fs::write(Self::path(), txt);
     }
 }
@@ -678,7 +685,7 @@ impl App {
         let mut keep = vec![0isize];
         for (z, w) in self.wins.iter().enumerate() {
             // Place pour le tas au-dessus de la fenêtre.
-            if w.snowy && w.t > PILE_MAX + 4.0 && w.t < self.h {
+            if w.snowy && w.t > PILE_MAXS[self.cfg.pile.min(2)] + 4.0 && w.t < self.h {
                 keep.push(w.hwnd);
                 // Décoration tirée une seule fois, à la création de la fenêtre, en évitant celles déjà utilisées.
                 let fresh = !self.anchors.contains_key(&w.hwnd);
@@ -790,7 +797,7 @@ impl App {
                         let idx = c as i32 + d;
                         if idx >= 0 && (idx as usize) < a.pile.len() {
                             let wgt = (-((d * d) as f32) / (2.0 * BUMP_SIGMA * BUMP_SIGMA)).exp();
-                            a.pile[idx as usize] = (a.pile[idx as usize] + BUMP_AMP * wgt).min(PILE_MAX);
+                            a.pile[idx as usize] = (a.pile[idx as usize] + BUMP_AMP * wgt).min(PILE_MAXS[self.cfg.pile.min(2)]);
                         }
                     }
                     landed = true;
@@ -856,7 +863,7 @@ impl App {
                         self.santa_dist += SANTA_SPEED * dt;
                         if nx > ar + 60.0 {
                             self.santa_x = None;
-                            self.next_santa = self.t + 120.0 + self.rng.next() * 60.0;
+                            self.next_santa = self.t + (120.0 + self.rng.next() * 60.0) * FREQ_MUL[self.cfg.freq.min(2)];
                         } else {
                             self.santa_x = Some(nx);
                             // À mi-parcours il s'arrête pour saluer.
@@ -882,7 +889,7 @@ impl App {
                 let nx = x + dir * (self.w + 1000.0) / 11.0 * dt;
                 if nx < -520.0 || nx > self.w + 520.0 {
                     self.sleigh = None;
-                    self.next_sleigh = self.t + 240.0 + self.rng.next() * 120.0;
+                    self.next_sleigh = self.t + (240.0 + self.rng.next() * 120.0) * FREQ_MUL[self.cfg.freq.min(2)];
                 } else {
                     self.sleigh = Some((nx, dir));
                 }
@@ -1314,6 +1321,16 @@ fn show_menu(hwnd: HWND, cfg: Settings) {
         let _ = AppendMenuW(menu, MF_POPUP, snow.0 as usize, w!("Neige"));
         let _ = AppendMenuW(menu, chk(cfg.decor), ID_DECOR, w!("Décorations"));
         let _ = AppendMenuW(menu, chk(cfg.auto_chars), ID_AUTO, w!("Père Noël et traîneau automatiques"));
+        let Ok(freq) = CreatePopupMenu() else { return };
+        for (i, n) in [w!("Rare"), w!("Normale"), w!("Fréquente")].iter().enumerate() {
+            let _ = AppendMenuW(freq, chk(cfg.freq == i), ID_FREQ0 + i, *n);
+        }
+        let Ok(pile) = CreatePopupMenu() else { return };
+        for (i, n) in [w!("Fine"), w!("Normale"), w!("Épaisse")].iter().enumerate() {
+            let _ = AppendMenuW(pile, chk(cfg.pile == i), ID_PILE0 + i, *n);
+        }
+        let _ = AppendMenuW(menu, MF_POPUP, pile.0 as usize, w!("Neige accumulée"));
+        let _ = AppendMenuW(menu, MF_POPUP, freq.0 as usize, w!("Fréquence des passages"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, ID_SANTA, w!("Lancer le Père Noël"));
         let _ = AppendMenuW(menu, MF_STRING, ID_SLEIGH, w!("Lancer le traîneau"));
@@ -1349,11 +1366,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         app.apply_visibility();
                     }
                 }),
-                id @ (ID_DECOR | ID_AUTO | ID_SNOW0..=1013) => APP.with(|a| {
+                id @ (ID_DECOR | ID_AUTO | ID_SNOW0..=1013 | ID_FREQ0..=1032 | ID_PILE0..=1042) => APP.with(|a| {
                     if let Some(app) = a.borrow_mut().as_mut() {
                         match id {
                             ID_DECOR => app.cfg.decor = !app.cfg.decor,
                             ID_AUTO => app.cfg.auto_chars = !app.cfg.auto_chars,
+                            ID_FREQ0..=1032 => app.cfg.freq = id - ID_FREQ0,
+                            ID_PILE0..=1042 => app.cfg.pile = id - ID_PILE0,
                             _ => app.cfg.snow = id - ID_SNOW0,
                         }
                         app.cfg.save();
