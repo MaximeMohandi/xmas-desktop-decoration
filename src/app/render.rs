@@ -268,17 +268,23 @@ impl App {
         for (key, a) in self.anchors.iter().filter(|(_, a)| near(a)) {
             self.draw_pile(*key, a);
         }
-        // Barres des tâches (de chaque écran): décor fixe; le père Noël marche sur celle de l'écran principal.
-        if self.cfg.decor {
-            for (_, a) in self.anchors.iter().filter(|(k, a)| **k <= 0 && near(a)) {
-                let width = a.r - a.l;
-                self.draw_scene(&TB_LEFT, 0, a.l + width * 0.11, a.t + 2.0, 96.0, false, 1.0, a.z, a.t + 2.0);
-                self.draw_scene(&TB_RIGHT, 0, a.l + width * 0.82, a.t + 2.0, 74.0, true, 1.0, a.z, a.t + 2.0);
+        // Les barres des tâches de tous les écrans forment un seul terrain: les deux scènes n'y sont posées qu'une fois,
+        // et le père Noël le traverse d'un bout à l'autre.
+        if let Some((tl, tr)) = self.taskbar_span() {
+            if self.cfg.decor {
+                for (frac, pieces, hh, mirror) in [(0.11, &TB_LEFT[..], 96.0, false), (0.82, &TB_RIGHT[..], 74.0, true)] {
+                    let x = tl + (tr - tl) * frac;
+                    if let Some(a) = self.taskbar_at(x).filter(|a| near(a)) {
+                        self.draw_scene(pieces, 0, x, a.t + 2.0, hh, mirror, 1.0, a.z, a.t + 2.0);
+                    }
+                }
             }
-        }
-        if let (Some(a), Some(sx)) = (self.anchors.get(&0), self.santa_x) {
-            if near(a) && sx > vl - 120.0 && sx < vr + 120.0 && !covered(&self.wins, a.z, sx, a.t + 2.0) {
-                self.draw_santa(sx, a.t - 1.0);
+            if let Some(sx) = self.santa_x {
+                if let Some(a) = self.taskbar_at(sx).filter(|a| near(a)) {
+                    if sx > vl - 120.0 && sx < vr + 120.0 && !covered(&self.wins, a.z, sx, a.t + 2.0) {
+                        self.draw_santa(sx, a.t - 1.0);
+                    }
+                }
             }
         }
         // Fenêtres: chacune garde la décoration tirée à sa création (scène ou accent), quand elle est immobile.

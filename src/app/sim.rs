@@ -11,6 +11,18 @@ impl App {
         ((SNOW_COUNT[self.cfg.snow.min(3)] as f32 * self.density) as usize).min(FLAKE_POOL)
     }
 
+    /// Étendue horizontale du « terrain »: toutes les barres des tâches mises bout à bout.
+    pub(crate) fn taskbar_span(&self) -> Option<(f32, f32)> {
+        let mut it = self.anchors.iter().filter(|(k, _)| **k <= 0).map(|(_, a)| (a.l, a.r));
+        let first = it.next()?;
+        Some(it.fold(first, |(l, r), (al, ar)| (l.min(al), r.max(ar))))
+    }
+
+    /// Barre des tâches qui porte le point d'abscisse x (le terrain peut être sur plusieurs écrans).
+    pub(crate) fn taskbar_at(&self, x: f32) -> Option<&Anchor> {
+        self.anchors.iter().filter(|(k, _)| **k <= 0).map(|(_, a)| a).find(|a| x >= a.l && x < a.r)
+    }
+
     /// Barres des tâches: clé 0 = celle de l'écran principal, clé négative (-hwnd) = celles des autres écrans.
     pub(crate) fn update_taskbar(&mut self) {
         let mut live: Vec<isize> = Vec::new();
@@ -258,7 +270,7 @@ impl App {
 
     /// Père Noël qui marche sur la barre des tâches, traîneau qui traverse le haut de l'écran.
     pub(crate) fn update_characters(&mut self, dt: f32) {
-        let tb = self.anchors.get(&0).map(|a| (a.l, a.r));
+        let tb = self.taskbar_span();
         if let Some((al, ar)) = tb {
             match self.santa_x {
                 Some(x) => {
