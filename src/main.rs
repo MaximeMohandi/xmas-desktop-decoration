@@ -28,43 +28,18 @@ fn run() -> Result<()> {
         if GetLastError() == ERROR_ALREADY_EXISTS {
             return Ok(());
         }
-        let hinst = GetModuleHandleW(None)?;
-        let class = w!("SneakyXmasOverlay");
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wndproc),
-            hInstance: hinst.into(),
-            lpszClassName: class,
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
+        let hinst: HINSTANCE = GetModuleHandleW(None)?.into();
+        // Classe des overlays (une fenêtre par écran, créées par l'application) et de la fenêtre cachée de l'icône.
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(overlay_proc), hInstance: hinst, lpszClassName: w!("SneakyXmasOverlay"), ..Default::default() });
+        let main_class = w!("SneakyXmasMain");
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: hinst, lpszClassName: main_class, ..Default::default() });
+        let hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, main_class, w!("sneakyXmas"), WS_POPUP, 0, 0, 0, 0, None, None, hinst, None)?;
 
-        // Prototype: écran principal uniquement.
-        let (w, h) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-        let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST
-                | WS_EX_TOOLWINDOW
-                | WS_EX_TRANSPARENT
-                | WS_EX_NOACTIVATE
-                | WS_EX_LAYERED
-                | WS_EX_NOREDIRECTIONBITMAP,
-            class,
-            w!("sneakyXmas"),
-            WS_POPUP,
-            0,
-            0,
-            w,
-            h,
-            None,
-            None,
-            hinst,
-            None,
-        )?;
-
-        let mut app = App::new(hwnd, w, h)?;
+        let mut app = App::new(hwnd, hinst)?;
         app.active = app.cfg.active;
+        app.apply_visibility();
         APP.with(|a| *a.borrow_mut() = Some(app));
         add_tray(hwnd);
-        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 
         let mut msg = MSG::default();
         loop {

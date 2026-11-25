@@ -3,33 +3,61 @@ use crate::prelude::*;
 
 impl App {
     pub(crate) fn is_rendering(&self) -> bool {
-        self.active && !self.hidden_for_fullscreen
+        self.active && self.surfaces.iter().any(|s| !s.hidden)
     }
 
-    /// Clé 0 = barre des tâches (en bas de l'écran principal uniquement pour l'instant).
+    /// Nombre de flocons actifs: le réglage de neige, multiplié par la surface totale des écrans.
+    pub(crate) fn flake_count(&self) -> usize {
+        ((SNOW_COUNT[self.cfg.snow.min(3)] as f32 * self.density) as usize).min(FLAKE_POOL)
+    }
+
+    /// Barres des tâches: clé 0 = celle de l'écran principal, clé négative (-hwnd) = celles des autres écrans.
     pub(crate) fn update_taskbar(&mut self) {
+        let mut live: Vec<isize> = Vec::new();
         unsafe {
-            let mut r = RECT::default();
             if let Ok(tb) = FindWindowW(w!("Shell_TrayWnd"), None) {
-                if GetWindowRect(tb, &mut r).is_ok()
-                    && (r.top as f32) < self.h - 2.0
-                    && r.top as f32 > self.h * 0.5
-                    && r.left < r.right
-                {
-                    let a = self.anchors.entry(0).or_insert(Anchor { l: 0.0, t: 0.0, r: 0.0, pile: Vec::new(), z: None, px: f32::NAN, py: f32::NAN, still: 0.0, seed: 0, kind: 0, variant: 0, left: false, hh: 60.0, deco: 0.0 });
-                    a.set_geometry(r.left as f32, r.top as f32, r.right as f32);
-                    a.still = 99.0; // la barre ne bouge pas: couche de neige dès le départ
-                    return;
+                if self.set_taskbar(0, tb) {
+                    live.push(0);
                 }
             }
-            self.anchors.remove(&0); // masquée ou ailleurs: pas d'accumulation
+            let mut prev = HWND::default();
+            while let Ok(tb) = FindWindowExW(None, prev, w!("Shell_SecondaryTrayWnd"), None) {
+                if tb.0.is_null() {
+                    break;
+                }
+                let key = -(tb.0 as isize);
+                if self.set_taskbar(key, tb) {
+                    live.push(key);
+                }
+                prev = tb;
+            }
         }
+        // Barre masquée ou débranchée: plus d'accumulation.
+        self.anchors.retain(|k, _| *k > 0 || live.contains(k));
+    }
+
+    /// Met à jour l'ancre d'une barre des tâches posée en bas de son écran. Faux si elle est masquée ou ailleurs.
+    unsafe fn set_taskbar(&mut self, key: isize, tb: HWND) -> bool {
+        let mut r = RECT::default();
+        if GetWindowRect(tb, &mut r).is_err() || r.left >= r.right {
+            return false;
+        }
+        let Some(m) = self.monitor_at((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0) else { return false };
+        let top = r.top as f32;
+        if !(top < m.3 - 2.0 && top > m.1 + (m.3 - m.1) * 0.5) {
+            return false;
+        }
+        let a = self.anchors.entry(key).or_insert(Anchor { l: 0.0, t: 0.0, r: 0.0, pile: Vec::new(), z: None, px: f32::NAN, py: f32::NAN, still: 0.0, seed: 0, kind: 0, variant: 0, left: false, hh: 60.0, deco: 0.0 });
+        a.set_geometry(r.left as f32, top, r.right as f32);
+        a.still = 99.0; // la barre ne bouge pas: couche de neige dès le départ
+        true
     }
 
     /// Réénumère les fenêtres (ordre d'affichage) et crée/supprime les Ancres.
     pub(crate) fn refresh_windows(&mut self) {
         ENUM_WINS.with(|w| w.borrow_mut().clear());
         TASKBAR_Z.with(|z| z.set(None));
+        SEC_TB_Z.with(|z| z.borrow_mut().clear());
         unsafe {
             let _ = EnumWindows(Some(enum_cb), LPARAM(0));
         }
@@ -37,13 +65,15 @@ impl App {
         let mut keep = vec![0isize];
         for (z, w) in self.wins.iter().enumerate() {
             // Place pour le tas au-dessus de la fenêtre.
-            if w.snowy && w.t > PILE_MAXS[self.cfg.pile.min(2)] + 4.0 && w.t < self.h {
+            // La fenêtre doit avoir de la place au-dessus d'elle sur son écran pour recevoir un tas.
+            let mtop = self.monitor_at((w.l + w.r) / 2.0, w.t + 1.0).map(|m| m.1);
+            if w.snowy && mtop.is_some_and(|mt| w.t > mt + PILE_MAXS[self.cfg.pile.min(2)] + 4.0) {
                 keep.push(w.hwnd);
                 // Décoration tirée une seule fois, à la création de la fenêtre, en évitant celles déjà utilisées.
                 let fresh = !self.anchors.contains_key(&w.hwnd);
                 let pick = if fresh {
                     let n = SCENES.len() + ACCENTS.len();
-                    let used: Vec<usize> = self.anchors.iter().filter(|(k, _)| **k != 0).map(|(_, a)| a.kind).collect();
+                    let used: Vec<usize> = self.anchors.iter().filter(|(k, _)| **k > 0).map(|(_, a)| a.kind).collect();
                     let free: Vec<usize> = (0..n).filter(|k| !used.contains(k)).collect();
                     let kind = if free.is_empty() {
                         (self.rng.next() * n as f32) as usize % n
@@ -63,10 +93,14 @@ impl App {
                 }
             }
         }
-        self.anchors.retain(|k, _| keep.contains(k));
+        self.anchors.retain(|k, _| *k <= 0 || keep.contains(k));
         let tz = TASKBAR_Z.with(|z| z.get());
         if let Some(a) = self.anchors.get_mut(&0) {
             a.z = tz;
+        }
+        let sec = SEC_TB_Z.with(|z| z.borrow().clone());
+        for (k, a) in self.anchors.iter_mut().filter(|(k, _)| **k < 0) {
+            a.z = sec.iter().find(|(h, _)| *h == -*k).map(|(_, z)| *z);
         }
     }
 
@@ -89,6 +123,12 @@ impl App {
     }
 
     pub(crate) fn tick(&mut self) {
+        // Écran branché, débranché ou réorganisé: on refait les overlays.
+        if REBUILD.with(|r| r.replace(false)) {
+            if let Err(e) = self.rebuild_surfaces() {
+                let _ = std::fs::write("sneakyxmas.log", format!("rebuild: {e:?}\n"));
+            }
+        }
         self.ticks += 1;
         let now = Instant::now();
         let dt = now.duration_since(self.last).as_secs_f32().min(0.1);
@@ -97,14 +137,20 @@ impl App {
         // Mode plein écran / écran verrouillé: on masque et on ne dessine plus.
         if now.duration_since(self.last_fs_check).as_secs_f32() >= 0.5 {
             self.last_fs_check = now;
-            let fullscreen = unsafe {
-                matches!(
-                    SHQueryUserNotificationState(),
-                    Ok(QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE)
-                ) || foreground_covers_monitor(self.hwnd)
-            };
-            if fullscreen != self.hidden_for_fullscreen {
-                self.hidden_for_fullscreen = fullscreen;
+            // Un écran occupé par une application plein écran est masqué; les autres continuent.
+            let fs = fullscreen_monitor(self.hwnd);
+            let mut changed = false;
+            for s in &mut self.surfaces {
+                let hide = fs.is_some_and(|m| {
+                    (m.left == 0 && m.top == 0 && m.right == 0 && m.bottom == 0)
+                        || (m.left as f32, m.top as f32, m.right as f32, m.bottom as f32) == s.rect
+                });
+                if hide != s.hidden {
+                    s.hidden = hide;
+                    changed = true;
+                }
+            }
+            if changed {
                 self.apply_visibility();
             }
         }
@@ -127,7 +173,8 @@ impl App {
 
         self.t += dt;
         self.update_characters(dt);
-        let nflakes = SNOW_COUNT[self.cfg.snow.min(3)];
+        let nflakes = self.flake_count();
+        let (vx, vy, vw, vh) = (self.vx, self.vy, self.w, self.h);
         for f in self.flakes.iter_mut().take(nflakes) {
             let prev_y = f.y;
             f.y += f.speed * dt;
@@ -136,7 +183,7 @@ impl App {
             for (key, a) in self.anchors.iter_mut() {
                 let Some(c) = a.col(f.x) else { continue };
                 let level = a.t - a.pile[c];
-                let is_taskbar = *key == 0;
+                let is_taskbar = *key <= 0;
                 // Fenêtre: le flocon doit arriver d'au-dessus du bord, loin des coins.
                 // Barre des tâches: tout flocon qui atteint le tas se pose (sinon il traverserait la barre).
                 let from_above = prev_y + f.r <= level + 1.0;
@@ -156,9 +203,9 @@ impl App {
                     break;
                 }
             }
-            if landed || f.y > self.h + 5.0 {
-                f.y = -5.0;
-                f.x = self.rng.next() * self.w;
+            if landed || f.y > vy + vh + 5.0 {
+                f.y = vy - 5.0;
+                f.x = vx + self.rng.next() * vw;
             }
         }
         // Angle d'éboulement: la neige ne tient pas en pente raide, elle glisse vers le côté plus bas.
@@ -197,8 +244,8 @@ impl App {
             d.y += d.vy * dt;
             d.a -= 1.1 * dt;
         }
-        let h = self.h;
-        self.debris.retain(|d| d.a > 0.0 && d.y < h);
+        let bottom = self.vy + self.h;
+        self.debris.retain(|d| d.a > 0.0 && d.y < bottom);
         if let Err(e) = self.draw() {
             // Une erreur de dessin ne doit jamais faire tourner la boucle à vide: on trace une fois.
             if !self.draw_failed {
@@ -246,7 +293,7 @@ impl App {
         match self.sleigh {
             Some((x, dir)) => {
                 let nx = x + dir * (self.w + 1000.0) / 11.0 * dt;
-                if nx < -520.0 || nx > self.w + 520.0 {
+                if nx < self.vx - 520.0 || nx > self.vx + self.w + 520.0 {
                     self.sleigh = None;
                     self.next_sleigh = self.t + (240.0 + self.rng.next() * 120.0) * FREQ_MUL[self.cfg.freq.min(2)];
                 } else {
@@ -255,7 +302,7 @@ impl App {
             }
             None if self.t >= self.next_sleigh && (self.cfg.auto_chars || self.next_sleigh == 0.0) => {
                 let dir = if self.rng.next() < 0.5 { 1.0 } else { -1.0 };
-                self.sleigh = Some((if dir > 0.0 { -500.0 } else { self.w + 500.0 }, dir));
+                self.sleigh = Some((if dir > 0.0 { self.vx - 500.0 } else { self.vx + self.w + 500.0 }, dir));
             }
             None => {}
         }
@@ -289,6 +336,7 @@ impl App {
     }
 
     pub(crate) fn sleigh_y(&self) -> f32 {
-        self.h * 0.12 + (self.t * 2.2).sin() * 10.0
+        // Le traîneau vole en haut de l'écran principal.
+        self.pm.1 + (self.pm.3 - self.pm.1) * 0.12 + (self.t * 2.2).sin() * 10.0
     }
 }

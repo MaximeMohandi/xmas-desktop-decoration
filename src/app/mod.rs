@@ -3,16 +3,35 @@ use crate::prelude::*;
 
 mod render;
 mod sim;
+mod surface;
+
+pub(crate) use surface::Surface;
+
+/// Nombre de flocons préparés (le réglage de neige et le nombre d'écrans en utilisent une partie).
+pub(crate) const FLAKE_POOL: usize = 1600;
 
 pub(crate) struct App {
+    /// Fenêtre cachée qui reçoit l'icône de notification et ses messages.
     pub(crate) hwnd: HWND,
-    pub(crate) swap: IDXGISwapChain1,
+    pub(crate) hinst: HINSTANCE,
+    /// Un overlay par écran; tout le monde partage le même monde (coordonnées du bureau virtuel).
+    pub(crate) surfaces: Vec<Surface>,
+    pub(crate) dxgi_dev: IDXGIDevice,
+    pub(crate) dxgi_factory: IDXGIFactory2,
+    /// Origine de l'écran en cours de dessin (le monde est translaté de -origin).
+    pub(crate) origin: std::cell::Cell<(f32, f32)>,
+    /// Rectangle englobant tous les écrans, et rectangle de l'écran principal.
+    pub(crate) vx: f32,
+    pub(crate) vy: f32,
+    pub(crate) pm: (f32, f32, f32, f32),
+    /// Facteur de densité de neige (largeur totale des écrans / largeur de l'écran principal).
+    pub(crate) density: f32,
     pub(crate) ctx: ID2D1DeviceContext,
     pub(crate) brush: ID2D1SolidColorBrush,
     pub(crate) pen: ID2D1SolidColorBrush,
     pub(crate) draw_failed: bool,
-    /// Géométries des tas, recalculées seulement quand leur forme change.
-    pub(crate) pile_cache: RefCell<HashMap<isize, (u64, Vec<(ID2D1PathGeometry, ID2D1PathGeometry)>)>>,
+    /// Géométries des tas: recalculées quand leur forme change, au plus 5 fois par seconde.
+    pub(crate) pile_cache: RefCell<HashMap<isize, (u64, f32, Vec<(ID2D1PathGeometry, ID2D1PathGeometry)>)>>,
     pub(crate) factory: ID2D1Factory1,
     pub(crate) round: ID2D1StrokeStyle,
     pub(crate) spr: Sprites,
@@ -28,9 +47,7 @@ pub(crate) struct App {
     pub(crate) next_santa: f32,
     pub(crate) sleigh: Option<(f32, f32)>,
     pub(crate) next_sleigh: f32,
-    pub(crate) _dcomp: IDCompositionDevice,
-    pub(crate) _target: IDCompositionTarget,
-    pub(crate) _visual: IDCompositionVisual,
+    pub(crate) dcomp: IDCompositionDevice,
     pub(crate) w: f32,
     pub(crate) h: f32,
     pub(crate) flakes: Vec<Flake>,
@@ -38,7 +55,6 @@ pub(crate) struct App {
     pub(crate) t: f32,
     pub(crate) active: bool,
     pub(crate) cfg: Settings,
-    pub(crate) hidden_for_fullscreen: bool,
     pub(crate) ticks: u32,
     pub(crate) last: Instant,
     pub(crate) last_fs_check: Instant,
@@ -50,7 +66,7 @@ pub(crate) struct App {
 thread_local! { pub(crate) static APP: RefCell<Option<App>> = const { RefCell::new(None) }; }
 
 impl App {
-    pub(crate) fn new(hwnd: HWND, w: i32, h: i32) -> Result<App> {
+    pub(crate) fn new(hwnd: HWND, hinst: HINSTANCE) -> Result<App> {
         unsafe {
             let mut dev: Option<ID3D11Device> = None;
             D3D11CreateDevice(
@@ -68,21 +84,6 @@ impl App {
             // Une seule image d'avance: la position lue est affichée à l'image suivante.
             dxgi_dev.cast::<IDXGIDevice1>()?.SetMaximumFrameLatency(1)?;
             let factory: IDXGIFactory2 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))?;
-
-            let desc = DXGI_SWAP_CHAIN_DESC1 {
-                Width: w as u32,
-                Height: h as u32,
-                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                Stereo: false.into(),
-                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-                BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                BufferCount: 2,
-                Scaling: DXGI_SCALING_STRETCH,
-                SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-                AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
-                Flags: 0,
-            };
-            let swap = factory.CreateSwapChainForComposition(&dxgi_dev, &desc, None)?;
 
             let d2d_factory: ID2D1Factory1 =
                 D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
@@ -109,27 +110,24 @@ impl App {
             )?;
 
             let dcomp: IDCompositionDevice = DCompositionCreateDevice(&dxgi_dev)?;
-            let target = dcomp.CreateTargetForHwnd(hwnd, true)?;
-            let visual = dcomp.CreateVisual()?;
-            visual.SetContent(&swap)?;
-            target.SetRoot(&visual)?;
-            dcomp.Commit()?;
 
             let mut rng = Rng(0x2545F4914F6CDD1D);
-            let flakes = (0..400)
-                .map(|_| Flake {
-                    x: rng.next() * w as f32,
-                    y: rng.next() * h as f32,
-                    r: 1.5 + rng.next() * 3.5,
-                    speed: 30.0 + rng.next() * 60.0,
-                    phase: rng.next() * 6.28,
-                })
+            let flakes = (0..FLAKE_POOL)
+                .map(|_| Flake { x: 0.0, y: 0.0, r: 1.5 + rng.next() * 3.5, speed: 30.0 + rng.next() * 60.0, phase: rng.next() * 6.28 })
                 .collect();
 
             let salt = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(1) | 1;
-            Ok(App {
+            let mut app = App {
                 hwnd,
-                swap,
+                hinst,
+                surfaces: Vec::new(),
+                dxgi_dev,
+                dxgi_factory: factory,
+                origin: std::cell::Cell::new((0.0, 0.0)),
+                vx: 0.0,
+                vy: 0.0,
+                pm: (0.0, 0.0, 1920.0, 1080.0),
+                density: 1.0,
                 ctx,
                 brush,
                 pen,
@@ -149,24 +147,23 @@ impl App {
                 next_santa: 12.0,
                 sleigh: None,
                 next_sleigh: 40.0,
-                _dcomp: dcomp,
-                _target: target,
-                _visual: visual,
-                w: w as f32,
-                h: h as f32,
+                dcomp,
+                w: 1920.0,
+                h: 1080.0,
                 flakes,
                 rng,
                 t: 0.0,
                 active: true,
                 cfg: Settings::load(),
-                hidden_for_fullscreen: false,
                 ticks: 0,
                 last: Instant::now(),
                 last_fs_check: Instant::now() - std::time::Duration::from_secs(1),
                 debris: Vec::new(),
                 anchors: HashMap::new(),
                 wins: Vec::new(),
-            })
+            };
+            app.rebuild_surfaces()?;
+            Ok(app)
         }
     }
 

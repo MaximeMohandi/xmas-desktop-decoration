@@ -2,6 +2,9 @@
 use crate::prelude::*;
 
 pub(crate) const WM_TRAY: u32 = WM_APP + 1;
+
+// Demande de reconstruction des overlays (écran branché, débranché ou réorganisé).
+thread_local! { pub(crate) static REBUILD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 pub(crate) const ID_TOGGLE: usize = 1001;
 pub(crate) const ID_QUIT: usize = 1002;
 pub(crate) const ID_SANTA: usize = 1003;
@@ -133,6 +136,10 @@ pub(crate) unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, l
             }
             LRESULT(0)
         }
+        WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
+            REBUILD.with(|r| r.set(true));
+            DefWindowProcW(hwnd, msg, wp, lp)
+        }
         WM_DESTROY => {
             remove_tray(hwnd);
             PostQuitMessage(0);
@@ -142,3 +149,8 @@ pub(crate) unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, l
     }
 }
 
+
+/// Fenêtre d'un overlay: ne fait rien (insensible aux clics); sa destruction ne quitte pas l'application.
+pub(crate) unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    DefWindowProcW(hwnd, msg, wp, lp)
+}

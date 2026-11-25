@@ -63,6 +63,7 @@ pub(crate) fn covered(wins: &[WinInfo], z: Option<usize>, x: f32, y: f32) -> boo
 }
 
 thread_local! { pub(crate) static TASKBAR_Z: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) }; }
+thread_local! { pub(crate) static SEC_TB_Z: RefCell<Vec<(isize, usize)>> = const { RefCell::new(Vec::new()) }; }
 thread_local! { pub(crate) static ENUM_WINS: RefCell<Vec<WinInfo>> = const { RefCell::new(Vec::new()) }; }
 
 pub(crate) fn class_name(hwnd: HWND) -> String {
@@ -98,6 +99,12 @@ pub(crate) unsafe extern "system" fn enum_cb(hwnd: HWND, _: LPARAM) -> BOOL {
         return BOOL(1);
     }
     let cls = class_name(hwnd);
+    if cls == "Shell_SecondaryTrayWnd" {
+        // Barres des tâches des autres écrans: leur position dans l'ordre d'affichage.
+        let n = ENUM_WINS.with(|w| w.borrow().len());
+        SEC_TB_Z.with(|z| z.borrow_mut().push((hwnd.0 as isize, n)));
+        return BOOL(1);
+    }
     if cls == "Shell_TrayWnd" {
         // Position de la barre des tâches dans l'ordre d'affichage (pour son recouvrement).
         let n = ENUM_WINS.with(|w| w.borrow().len());
@@ -123,11 +130,11 @@ pub(crate) unsafe extern "system" fn enum_cb(hwnd: HWND, _: LPARAM) -> BOOL {
 /// couvre entièrement son écran sans être maximisée: jeu, film, F11 navigateur.
 /// Note: SHQueryUserNotificationState ne convient pas seul car il détecte l'Overlay
 /// lui-même (il couvre tout l'écran) comme une application plein écran.
-pub(crate) fn foreground_covers_monitor(own: HWND) -> bool {
+pub(crate) fn foreground_covers_monitor(own: HWND) -> Option<RECT> {
     unsafe {
         let fg = GetForegroundWindow();
         if fg.0.is_null() || fg == own {
-            return false;
+            return None;
         }
         let mut cls = [0u16; 64];
         let n = GetClassNameW(fg, &mut cls) as usize;
@@ -136,23 +143,45 @@ pub(crate) fn foreground_covers_monitor(own: HWND) -> bool {
             cls.as_str(),
             "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "SneakyXmasOverlay"
         ) {
-            return false;
+            return None;
         }
         // Pas d'exclusion des fenêtres maximisées: F11 / vidéo plein écran le restent pour Windows.
         if !IsWindowVisible(fg).as_bool() {
-            return false;
+            return None;
         }
         let mut r = RECT::default();
         if GetWindowRect(fg, &mut r).is_err() {
-            return false;
+            return None;
         }
         let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
         let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
         if !GetMonitorInfoW(mon, &mut mi).as_bool() {
-            return false;
+            return None;
         }
         let m = mi.rcMonitor;
-        r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
+        (r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom).then_some(m)
     }
 }
 
+
+/// Écran occupé par une application plein écran (jeu, film, F11), s'il y en a une.
+/// `RECT::default()` (tout à zéro) signifie « tous les écrans » (mode présentation sans fenêtre identifiable).
+pub(crate) fn fullscreen_monitor(own: HWND) -> Option<RECT> {
+    if let Some(m) = foreground_covers_monitor(own) {
+        return Some(m);
+    }
+    unsafe {
+        if matches!(SHQueryUserNotificationState(), Ok(QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE)) {
+            let fg = GetForegroundWindow();
+            if !fg.0.is_null() {
+                let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+                let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+                if GetMonitorInfoW(mon, &mut mi).as_bool() {
+                    return Some(mi.rcMonitor);
+                }
+            }
+            return Some(RECT::default());
+        }
+    }
+    None
+}

@@ -11,7 +11,7 @@ impl App {
         self.ctx.DrawLine(D2D_POINT_2F { x: x0, y: y0 }, D2D_POINT_2F { x: x1, y: y1 }, &self.pen, w, &self.round);
     }
     pub(crate) unsafe fn place(&self, x: f32, y: f32, sx: f32, sy: f32) {
-        self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2 { M11: sx, M12: 0.0, M21: 0.0, M22: sy, M31: x, M32: y });
+        self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2 { M11: sx, M12: 0.0, M21: 0.0, M22: sy, M31: x - self.origin.get().0, M32: y - self.origin.get().1 });
     }
     pub(crate) unsafe fn reset(&self) {
         self.place(0.0, 0.0, 1.0, 1.0);
@@ -19,7 +19,7 @@ impl App {
 
     pub(crate) unsafe fn place_rot(&self, x: f32, y: f32, sx: f32, sy: f32, rot: f32) {
         let (c, s) = (rot.cos(), rot.sin());
-        self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2 { M11: sx * c, M12: sx * s, M21: -sy * s, M22: sy * c, M31: x, M32: y });
+        self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2 { M11: sx * c, M12: sx * s, M21: -sy * s, M22: sy * c, M31: x - self.origin.get().0, M32: y - self.origin.get().1 });
     }
 
     /// Dessine une image (coin haut-gauche en (x, y), échelle s) dans l'espace courant.
@@ -152,12 +152,16 @@ impl App {
         for r in &runs {
             for p in r {
                 hash = (hash ^ p.0.to_bits() as u64).wrapping_mul(0x100_0000_01b3);
-                hash = (hash ^ (p.1 * 4.0) as u64).wrapping_mul(0x100_0000_01b3);
+                hash = (hash ^ (p.1 * 2.0) as u64).wrapping_mul(0x100_0000_01b3);
             }
             hash = (hash ^ 0xff).wrapping_mul(0x100_0000_01b3);
         }
         let mut cache = self.pile_cache.borrow_mut();
-        if cache.get(&key).map(|c| c.0) != Some(hash) {
+        let stale = match cache.get(&key) {
+            None => true,
+            Some(c) => c.0 != hash && self.t - c.1 >= 0.2,
+        };
+        if stale {
             let geos = runs
                 .iter()
                 .filter_map(|r| {
@@ -166,9 +170,9 @@ impl App {
                     Some((self.smooth_path(&top, base)?, self.smooth_path(&shade, base)?))
                 })
                 .collect();
-            cache.insert(key, (hash, geos));
+            cache.insert(key, (hash, self.t, geos));
         }
-        for (top, shade) in &cache[&key].1 {
+        for (top, shade) in &cache[&key].2 {
             self.pen.SetColor(&D2D1_COLOR_F { r: 0.97, g: 0.98, b: 1.0, a: 0.98 });
             self.ctx.FillGeometry(top, &self.pen, None);
             self.pen.SetColor(&D2D1_COLOR_F { r: 0.78, g: 0.86, b: 0.96, a: 0.9 });
@@ -232,96 +236,108 @@ impl App {
         self.reset();
     }
 
+    /// Dessine une image sur chaque écran visible.
     pub(crate) fn draw(&self) -> Result<()> {
-        unsafe {
-            let surface: IDXGISurface = self.swap.GetBuffer(0)?;
-            let props = D2D1_BITMAP_PROPERTIES1 {
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                dpiX: 96.0,
-                dpiY: 96.0,
-                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-                colorContext: std::mem::ManuallyDrop::new(None),
-            };
-            let bitmap = self.ctx.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
-            self.ctx.SetTarget(&bitmap);
-            self.ctx.BeginDraw();
-            self.ctx.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
-            // La neige accumulée d'abord: les décors et personnages se posent par-dessus, jamais enfouis.
-            for (key, a) in self.anchors.iter() {
-                self.draw_pile(*key, a);
+        for s in &self.surfaces {
+            if !s.hidden {
+                unsafe { self.draw_surface(s)? };
             }
-            if let Some(a) = self.anchors.get(&0) {
+        }
+        Ok(())
+    }
+
+    /// Dessine le monde vu par un écran: le monde est translaté de -origine, et on saute ce qui est hors champ.
+    unsafe fn draw_surface(&self, s: &Surface) -> Result<()> {
+        let (vl, vt, vr, vb) = s.rect;
+        self.origin.set((vl, vt));
+        let near = |a: &Anchor| a.r > vl - 200.0 && a.l < vr + 200.0 && a.t > vt - 150.0 && a.t < vb + 300.0;
+        let surface: IDXGISurface = s.swap.GetBuffer(0)?;
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        let bitmap = self.ctx.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
+        self.ctx.SetTarget(&bitmap);
+        self.ctx.BeginDraw();
+        self.reset();
+        self.ctx.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+        // La neige accumulée d'abord: les décors et personnages se posent par-dessus, jamais enfouis.
+        for (key, a) in self.anchors.iter().filter(|(_, a)| near(a)) {
+            self.draw_pile(*key, a);
+        }
+        // Barres des tâches (de chaque écran): décor fixe; le père Noël marche sur celle de l'écran principal.
+        if self.cfg.decor {
+            for (_, a) in self.anchors.iter().filter(|(k, a)| **k <= 0 && near(a)) {
                 let width = a.r - a.l;
-                if self.cfg.decor {
                 self.draw_scene(&TB_LEFT, 0, a.l + width * 0.11, a.t + 2.0, 96.0, false, 1.0, a.z, a.t + 2.0);
                 self.draw_scene(&TB_RIGHT, 0, a.l + width * 0.82, a.t + 2.0, 74.0, true, 1.0, a.z, a.t + 2.0);
-                }
-                if let Some(sx) = self.santa_x {
-                    if !covered(&self.wins, a.z, sx, a.t + 2.0) {
-                        self.draw_santa(sx, a.t - 1.0);
-                    }
-                }
             }
-            // Fenêtres: chacune garde la décoration tirée à sa création (scène ou accent), quand elle est immobile.
-            for (key, a) in self.anchors.iter() {
-                let width = a.r - a.l;
-                if !self.cfg.decor || *key == 0 || a.deco < 0.02 || width < 150.0 {
-                    continue;
-                }
-                let hh = a.hh;
-                if a.kind < SCENES.len() {
-                    // Fenêtre étroite: seule la pièce principale de la scène.
-                    let pieces = if width >= 300.0 { SCENES[a.kind] } else { &SCENES[a.kind][..1] };
-                    let cx = if a.left { a.l + 16.0 + hh } else { a.r - 16.0 - hh };
-                    self.draw_scene(pieces, a.variant, cx, a.t + 1.0, hh, !a.left, a.deco, a.z, a.t - 1.0);
-                } else {
-                    let (src, rel) = ACCENTS[a.kind - SCENES.len()];
-                    let cx = if a.left { a.l + 40.0 } else { a.r - 40.0 };
-                    self.draw_scene(&[pc(src, rel, 0.0)], a.variant, cx, a.t + 1.0, hh, false, a.deco, a.z, a.t - 1.0);
-                }
+        }
+        if let (Some(a), Some(sx)) = (self.anchors.get(&0), self.santa_x) {
+            if near(a) && sx > vl - 120.0 && sx < vr + 120.0 && !covered(&self.wins, a.z, sx, a.t + 2.0) {
+                self.draw_santa(sx, a.t - 1.0);
             }
-            // Un flocon n'est visible que sur le bureau: jamais devant une fenêtre (ni la barre des tâches).
-            let nw = self.wins.len();
-            for f in self.flakes.iter().take(SNOW_COUNT[self.cfg.snow.min(3)]) {
-                if covered(&self.wins, Some(nw), f.x, f.y) {
-                    continue;
-                }
-                let e = D2D1_ELLIPSE { point: D2D_POINT_2F { x: f.x, y: f.y }, radiusX: f.r, radiusY: f.r };
-                self.ctx.FillEllipse(&e, &self.brush);
+        }
+        // Fenêtres: chacune garde la décoration tirée à sa création (scène ou accent), quand elle est immobile.
+        for (key, a) in self.anchors.iter().filter(|(_, a)| near(a)) {
+            let width = a.r - a.l;
+            if !self.cfg.decor || *key <= 0 || a.deco < 0.02 || width < 150.0 {
+                continue;
             }
-            for sp in &self.sparks {
-                let a = sp.life.clamp(0.0, 1.0);
-                self.dot(sp.x, sp.y, sp.r * 2.6, sp.r * 2.6, D2D1_COLOR_F { r: 1.0 * 0.35 * a, g: 0.85 * 0.35 * a, b: 0.5 * 0.35 * a, a: 0.35 * a });
-                self.dot(sp.x, sp.y, sp.r, sp.r, D2D1_COLOR_F { r: 1.0 * a, g: 0.93 * a, b: 0.65 * a, a });
+            let hh = a.hh;
+            if a.kind < SCENES.len() {
+                // Fenêtre étroite: seule la pièce principale de la scène.
+                let pieces = if width >= 300.0 { SCENES[a.kind] } else { &SCENES[a.kind][..1] };
+                let cx = if a.left { a.l + 16.0 + hh } else { a.r - 16.0 - hh };
+                self.draw_scene(pieces, a.variant, cx, a.t + 1.0, hh, !a.left, a.deco, a.z, a.t - 1.0);
+            } else {
+                let (src, rel) = ACCENTS[a.kind - SCENES.len()];
+                let cx = if a.left { a.l + 40.0 } else { a.r - 40.0 };
+                self.draw_scene(&[pc(src, rel, 0.0)], a.variant, cx, a.t + 1.0, hh, false, a.deco, a.z, a.t - 1.0);
             }
-            if let Some((sx, dir)) = self.sleigh {
+        }
+        // Un flocon n'est visible que sur le bureau: jamais devant une fenêtre (ni la barre des tâches).
+        let nw = self.wins.len();
+        for f in self.flakes.iter().take(self.flake_count()) {
+            if f.x < vl - 6.0 || f.x > vr + 6.0 || f.y < vt - 6.0 || f.y > vb + 6.0 || covered(&self.wins, Some(nw), f.x, f.y) {
+                continue;
+            }
+            let e = D2D1_ELLIPSE { point: D2D_POINT_2F { x: f.x, y: f.y }, radiusX: f.r, radiusY: f.r };
+            self.ctx.FillEllipse(&e, &self.brush);
+        }
+        for sp in &self.sparks {
+            let a = sp.life.clamp(0.0, 1.0);
+            self.dot(sp.x, sp.y, sp.r * 2.6, sp.r * 2.6, D2D1_COLOR_F { r: 1.0 * 0.35 * a, g: 0.85 * 0.35 * a, b: 0.5 * 0.35 * a, a: 0.35 * a });
+            self.dot(sp.x, sp.y, sp.r, sp.r, D2D1_COLOR_F { r: 1.0 * a, g: 0.93 * a, b: 0.65 * a, a });
+        }
+        if let Some((sx, dir)) = self.sleigh {
+            if sx > vl - 560.0 && sx < vr + 560.0 {
                 self.draw_sleigh(sx, dir);
             }
-            for d in &self.debris {
-                self.brush.SetOpacity(d.a.clamp(0.0, 1.0));
-                let e = D2D1_ELLIPSE { point: D2D_POINT_2F { x: d.x, y: d.y }, radiusX: d.r, radiusY: d.r };
-                self.ctx.FillEllipse(&e, &self.brush);
-            }
-            self.brush.SetOpacity(1.0);
-            self.ctx.EndDraw(None, None)?;
-            self.ctx.SetTarget(None);
-            // Libère toute référence au tampon avant Present (sinon scintillement).
-            drop(bitmap);
-            drop(surface);
-            self.swap.Present(2, DXGI_PRESENT(0)).ok()?;
         }
+        for d in &self.debris {
+            self.brush.SetOpacity(d.a.clamp(0.0, 1.0));
+            let e = D2D1_ELLIPSE { point: D2D_POINT_2F { x: d.x, y: d.y }, radiusX: d.r, radiusY: d.r };
+            self.ctx.FillEllipse(&e, &self.brush);
+        }
+        self.brush.SetOpacity(1.0);
+        self.ctx.EndDraw(None, None)?;
+        self.ctx.SetTarget(None);
+        // Libère toute référence au tampon avant Present (sinon scintillement).
+        drop(bitmap);
+        drop(surface);
+        s.swap.Present(2, DXGI_PRESENT(0)).ok()?;
         Ok(())
     }
 
     pub(crate) fn apply_visibility(&self) {
         unsafe {
-            let _ = ShowWindow(
-                self.hwnd,
-                if self.active && !self.hidden_for_fullscreen { SW_SHOWNOACTIVATE } else { SW_HIDE },
-            );
+            for s in &self.surfaces {
+                let _ = ShowWindow(s.hwnd, if self.active && !s.hidden { SW_SHOWNOACTIVATE } else { SW_HIDE });
+            }
         }
     }
 }
