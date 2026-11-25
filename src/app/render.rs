@@ -249,14 +249,18 @@ impl App {
             self.ctx.SetTarget(&bitmap);
             self.ctx.BeginDraw();
             self.ctx.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            // La neige accumulée d'abord: les décors et personnages se posent par-dessus, jamais enfouis.
+            for (key, a) in self.anchors.iter() {
+                self.draw_pile(*key, a);
+            }
             if let Some(a) = self.anchors.get(&0) {
                 let width = a.r - a.l;
                 if self.cfg.decor {
-                self.draw_scene(&TB_LEFT, 0, a.l + width * 0.11, a.t + 2.0, 96.0, false, 1.0, a.z, a.t - 10.0);
-                self.draw_scene(&TB_RIGHT, 0, a.l + width * 0.82, a.t + 2.0, 74.0, true, 1.0, a.z, a.t - 10.0);
+                self.draw_scene(&TB_LEFT, 0, a.l + width * 0.11, a.t + 2.0, 96.0, false, 1.0, a.z, a.t + 2.0);
+                self.draw_scene(&TB_RIGHT, 0, a.l + width * 0.82, a.t + 2.0, 74.0, true, 1.0, a.z, a.t + 2.0);
                 }
                 if let Some(sx) = self.santa_x {
-                    if !covered(&self.wins, a.z, sx, a.t - 10.0) {
+                    if !covered(&self.wins, a.z, sx, a.t + 2.0) {
                         self.draw_santa(sx, a.t - 1.0);
                     }
                 }
@@ -287,9 +291,6 @@ impl App {
                 }
                 let e = D2D1_ELLIPSE { point: D2D_POINT_2F { x: f.x, y: f.y }, radiusX: f.r, radiusY: f.r };
                 self.ctx.FillEllipse(&e, &self.brush);
-            }
-            for (key, a) in self.anchors.iter() {
-                self.draw_pile(*key, a);
             }
             for sp in &self.sparks {
                 let a = sp.life.clamp(0.0, 1.0);
