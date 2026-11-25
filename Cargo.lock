@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "sneakyxmas"
-version = "0.1.0"
+version = "2.1.0"
 dependencies = [
  "windows",
 ]
