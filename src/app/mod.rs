@@ -61,6 +61,7 @@ pub(crate) struct App {
     pub(crate) ticks: u32,
     pub(crate) last: Instant,
     pub(crate) last_fs_check: Instant,
+    pub(crate) last_refresh: Instant,
     pub(crate) debris: Vec<Debris>,
     pub(crate) anchors: HashMap<isize, Anchor>,
     pub(crate) wins: Vec<WinInfo>,
@@ -68,7 +69,24 @@ pub(crate) struct App {
 
 thread_local! { pub(crate) static APP: RefCell<Option<App>> = const { RefCell::new(None) }; }
 
+/// Vrai si l'erreur signifie que le périphérique graphique est perdu (il faut tout recréer).
+pub(crate) fn is_device_lost(e: &windows::core::Error) -> bool {
+    [DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DRIVER_INTERNAL_ERROR, D2DERR_RECREATE_TARGET].contains(&e.code())
+}
+
 impl App {
+    /// Recrée tout (périphériques, overlays, sprites) après une perte du périphérique graphique.
+    /// Le nouvel état est construit d'abord: en cas d'échec l'ancien reste en place et on réessaiera.
+    pub(crate) fn recover_device(&mut self) -> Result<()> {
+        let fresh = App::new(self.hwnd, self.hinst)?;
+        let active = self.active;
+        self.drop_surfaces();
+        *self = fresh;
+        self.active = active;
+        self.apply_visibility();
+        Ok(())
+    }
+
     pub(crate) fn new(hwnd: HWND, hinst: HINSTANCE) -> Result<App> {
         unsafe {
             let mut dev: Option<ID3D11Device> = None;
@@ -163,6 +181,7 @@ impl App {
                 ticks: 0,
                 last: Instant::now(),
                 last_fs_check: Instant::now() - std::time::Duration::from_secs(1),
+                last_refresh: Instant::now(),
                 debris: Vec::new(),
                 anchors: HashMap::new(),
                 wins: Vec::new(),
@@ -172,4 +191,23 @@ impl App {
         }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_loss_errors_are_recognized() {
+        for hr in [DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DRIVER_INTERNAL_ERROR, D2DERR_RECREATE_TARGET] {
+            assert!(is_device_lost(&windows::core::Error::from(hr)), "{hr:?}");
+        }
+    }
+
+    #[test]
+    fn ordinary_errors_are_not_device_loss() {
+        for hr in [E_FAIL, E_OUTOFMEMORY, E_INVALIDARG] {
+            assert!(!is_device_lost(&windows::core::Error::from(hr)), "{hr:?}");
+        }
+    }
 }

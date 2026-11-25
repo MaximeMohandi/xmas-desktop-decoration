@@ -27,6 +27,19 @@ mémorisés (`sneakyxmas.ini`), démarrage avec Windows (HKCU Run), instance uni
   Un second lancement s'arrête seul (mutex) : toujours vérifier le PID et `sneakyxmas.log` (écrit seulement en cas d'erreur).
 - L'utilisateur valide **visuellement** ; on ne peut pas voir l'écran. Dire clairement ce qui n'a pas pu être vérifié.
 
+## Tests
+
+`cargo test` (mono-thread forcé par `.cargo/config.toml`). Session Windows **interactive** requise (écran + GPU) : les tests d'intégration
+(`src/tests.rs`, banc d'essai `src/testkit.rs`) créent de vrais overlays et de vraies fenêtres, visibles une fraction de seconde.
+Depuis WSL : `cmd.exe /c 'cd /d C:\projects\perso\sneakyXmas && C:\Users\<user>\.cargo\bin\cargo.exe test --target-dir target-new'`.
+- Tests unitaires à côté du code (`desktop.rs`, `tray.rs`, `app/mod.rs`) : délai de grâce des ancres, règle du plein écran, détection de
+  perte du périphérique, message `TaskbarCreated`.
+- Régressions couvertes : `WM_SETTINGCHANGE` (fenêtre qui se rafraîchit) ne reconstruit pas les overlays ; reconstruction réessayée après échec ;
+  fenêtre qui clignote garde sa décoration ; message reçu pendant `tick()` ni paniqué ni perdu ; reprise après perte du GPU ;
+  fenêtre maximisée ordinaire + barre auto-masquée ≠ plein écran.
+- Règle : tout bug corrigé reçoit un test qui échoue sans le correctif (vérifier en le retirant un instant).
+- Non testable automatiquement : l'aspect visuel, la vraie perte de GPU (seule la reprise est testée), un vrai redémarrage de l'explorateur.
+
 ## Architecture (`src/`)
 
 | Fichier | Rôle |
@@ -39,6 +52,7 @@ mémorisés (`sneakyxmas.ini`), démarrage avec Windows (HKCU Run), instance uni
 | `desktop.rs` | `WinInfo`, `Anchor`, `covered()` (recouvrement par z-order), énumération, plein écran |
 | `snow.rs` / `scenes.rs` / `sprites.rs` | flocons et couche de départ / scènes + plan de la barre / chargement PNG (WIC) |
 | `settings.rs` / `tray.rs` | ini + registre / icône, menu, fenêtres |
+| `testkit.rs` / `tests.rs` | (tests seulement) banc d'essai et tests d'intégration |
 
 Concepts clés : monde partagé en **coordonnées du bureau virtuel** (négatives possibles) ; ancres : clé `0` = barre principale,
 clé négative = barre d'un autre écran, clé positive = fenêtre (hwnd). `covered(wins, z, x, y)` masque ce qu'une fenêtre située

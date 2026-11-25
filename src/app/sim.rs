@@ -66,14 +66,27 @@ impl App {
         if !(top < m.3 - 2.0 && top > m.1 + (m.3 - m.1) * 0.5) {
             return false;
         }
-        let a = self.anchors.entry(key).or_insert(Anchor { l: 0.0, t: 0.0, r: 0.0, pile: Vec::new(), z: None, px: f32::NAN, py: f32::NAN, still: 0.0, seed: 0, kind: 0, variant: 0, left: false, hh: 60.0, deco: 0.0 });
+        let a = self.anchors.entry(key).or_insert(Anchor::new());
         a.set_geometry(r.left as f32, top, r.right as f32);
         a.still = 99.0; // la barre ne bouge pas: couche de neige dès le départ
         true
     }
 
+    /// Ancres visibles: celles d'une fenêtre momentanément absente ne se dessinent pas et ne reçoivent pas de neige.
+    pub(crate) fn live_anchors(&self) -> impl Iterator<Item = (&isize, &Anchor)> {
+        self.anchors.iter().filter(|(_, a)| a.present())
+    }
+
     /// Réénumère les fenêtres (ordre d'affichage) et crée/supprime les Ancres.
     pub(crate) fn refresh_windows(&mut self) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_refresh).as_secs_f32().min(1.0);
+        self.last_refresh = now;
+        self.refresh_windows_dt(dt);
+    }
+
+    /// `dt` = temps écoulé depuis la précédente énumération (pour le délai de grâce des fenêtres absentes).
+    pub(crate) fn refresh_windows_dt(&mut self, dt: f32) {
         ENUM_WINS.with(|w| w.borrow_mut().clear());
         TASKBAR_Z.with(|z| z.set(None));
         SEC_TB_Z.with(|z| z.borrow_mut().clear());
@@ -103,7 +116,7 @@ impl App {
                 } else {
                     (0, 0, false, 0.0)
                 };
-                let a = self.anchors.entry(w.hwnd).or_insert(Anchor { l: 0.0, t: 0.0, r: 0.0, pile: Vec::new(), z: None, px: f32::NAN, py: f32::NAN, still: 0.0, seed: 0, kind: 0, variant: 0, left: false, hh: 60.0, deco: 0.0 });
+                let a = self.anchors.entry(w.hwnd).or_insert(Anchor::new());
                 a.set_geometry(w.l, w.t, w.r);
                 a.z = Some(z);
                 if a.seed == 0 {
@@ -112,7 +125,7 @@ impl App {
                 }
             }
         }
-        self.anchors.retain(|k, _| *k <= 0 || keep.contains(k));
+        expire_anchors(&mut self.anchors, &keep, dt);
         let tz = TASKBAR_Z.with(|z| z.get());
         if let Some(a) = self.anchors.get_mut(&0) {
             a.z = tz;
@@ -143,9 +156,12 @@ impl App {
 
     pub(crate) fn tick(&mut self) {
         // Écran branché, débranché ou réorganisé: on refait les overlays.
-        if REBUILD.with(|r| r.replace(false)) {
+        if REBUILD.with(|r| r.replace(false)) && self.layout_changed() {
             if let Err(e) = self.rebuild_surfaces() {
                 let _ = std::fs::write("sneakyxmas.log", format!("rebuild: {e:?}\n"));
+                // Échec (écrans en cours de changement): sans overlay la boucle ralentit à 4 Hz, on réessaie ainsi.
+                self.drop_surfaces();
+                REBUILD.with(|r| r.set(true));
             }
         }
         self.ticks += 1;
@@ -169,7 +185,7 @@ impl App {
                         || (m.left as f32, m.top as f32, m.right as f32, m.bottom as f32) == s.rect
                 });
                 let (l, t, r, b) = s.rect;
-                let by_window = self.wins.iter().any(|w| w.l <= l + 1.0 && w.t <= t + 1.0 && w.r >= r - 1.0 && w.b >= b - 1.0);
+                let by_window = self.wins.iter().any(|w| hides_overlay((w.l, w.t, w.r, w.b), (l, t, r, b), w.normal_max));
                 let hide = by_fg || by_window;
                 if hide != s.hidden {
                     s.hidden = hide;
@@ -206,7 +222,7 @@ impl App {
             f.y += f.speed * dt;
             f.x += (self.t * 0.8 + f.phase).sin() * 20.0 * dt;
             let mut landed = false;
-            for (key, a) in self.anchors.iter_mut() {
+            for (key, a) in self.anchors.iter_mut().filter(|(_, a)| a.present()) {
                 let Some(c) = a.col(f.x) else { continue };
                 let level = a.t - a.pile[c];
                 let is_taskbar = *key <= 0;
@@ -277,6 +293,14 @@ impl App {
             if !self.draw_failed {
                 self.draw_failed = true;
                 let _ = std::fs::write("sneakyxmas.log", format!("draw: {e:?}\n"));
+            }
+            // Périphérique graphique perdu (pilote, veille, bureau à distance): on recrée tout au lieu de rester figé.
+            if is_device_lost(&e) {
+                if let Err(e2) = self.recover_device() {
+                    let _ = std::fs::write("sneakyxmas.log", format!("recover: {e2:?}\n"));
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                return;
             }
             std::thread::sleep(std::time::Duration::from_millis(33));
         }

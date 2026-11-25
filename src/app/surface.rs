@@ -119,6 +119,26 @@ impl App {
         Ok(())
     }
 
+    /// Vrai si la disposition réelle des écrans diffère de celle des overlays existants.
+    /// Windows diffuse `WM_SETTINGCHANGE` pour tout et n'importe quoi (thème, rafraîchissement d'une fenêtre...):
+    /// on ne reconstruit les overlays (et on ne perd la neige) que si les écrans ont vraiment changé.
+    pub(crate) fn layout_changed(&self) -> bool {
+        let mut now: Vec<[i32; 4]> = monitors().iter().map(|(r, _)| [r.left, r.top, r.right, r.bottom]).collect();
+        let mut cur: Vec<[i32; 4]> = self.surfaces.iter().map(|s| [s.rect.0 as i32, s.rect.1 as i32, s.rect.2 as i32, s.rect.3 as i32]).collect();
+        now.sort();
+        cur.sort();
+        now != cur
+    }
+
+    /// Détruit tous les overlays (après un échec de reconstruction: on réessaiera au prochain tour).
+    pub(crate) fn drop_surfaces(&mut self) {
+        for s in std::mem::take(&mut self.surfaces) {
+            unsafe {
+                let _ = DestroyWindow(s.hwnd);
+            }
+        }
+    }
+
     /// Écran (rectangle) qui contient le point, dans le bureau virtuel.
     pub(crate) fn monitor_at(&self, x: f32, y: f32) -> Option<(f32, f32, f32, f32)> {
         self.surfaces.iter().map(|s| s.rect).find(|r| x >= r.0 && x < r.2 && y >= r.1 && y < r.3)

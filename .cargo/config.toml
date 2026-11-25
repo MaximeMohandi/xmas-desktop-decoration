@@ -1,0 +1,3 @@
+[env]
+# Les tests d'intégration ouvrent de vraies fenêtres et un vrai périphérique Direct3D: un seul à la fois.
+RUST_TEST_THREADS = "1"

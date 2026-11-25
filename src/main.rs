@@ -11,10 +11,18 @@ mod snow;
 mod sprites;
 mod tray;
 mod util;
+#[cfg(test)]
+mod testkit;
+#[cfg(test)]
+mod tests;
 
 use prelude::*;
 
 fn main() {
+    // Sans console (windows_subsystem), une panique disparaîtrait sans trace: on l'écrit dans le journal.
+    std::panic::set_hook(Box::new(|info| {
+        let _ = std::fs::write("sneakyxmas.log", format!("panic: {info}\n"));
+    }));
     if let Err(e) = run() {
         let _ = std::fs::write("sneakyxmas.log", format!("{e:?}\n"));
     }
@@ -29,11 +37,7 @@ fn run() -> Result<()> {
             return Ok(());
         }
         let hinst: HINSTANCE = GetModuleHandleW(None)?.into();
-        // Classe des overlays (une fenêtre par écran, créées par l'application) et de la fenêtre cachée de l'icône.
-        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(overlay_proc), hInstance: hinst, lpszClassName: w!("SneakyXmasOverlay"), ..Default::default() });
-        let main_class = w!("SneakyXmasMain");
-        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: hinst, lpszClassName: main_class, ..Default::default() });
-        let hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, main_class, w!("sneakyXmas"), WS_POPUP, 0, 0, 0, 0, None, None, hinst, None)?;
+        let hwnd = create_main_window(hinst)?;
 
         let mut app = App::new(hwnd, hinst)?;
         app.active = app.cfg.active;

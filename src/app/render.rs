@@ -265,7 +265,7 @@ impl App {
         self.reset();
         self.ctx.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
         // La neige accumulée d'abord: les décors et personnages se posent par-dessus, jamais enfouis.
-        for (key, a) in self.anchors.iter().filter(|(_, a)| near(a)) {
+        for (key, a) in self.live_anchors().filter(|(_, a)| near(a)) {
             self.draw_pile(*key, a);
         }
         // Les barres des tâches de tous les écrans forment un seul terrain: les deux scènes n'y sont posées qu'une fois,
@@ -302,7 +302,7 @@ impl App {
             }
         }
         // Fenêtres: chacune garde la décoration tirée à sa création (scène ou accent), quand elle est immobile.
-        for (key, a) in self.anchors.iter().filter(|(_, a)| near(a)) {
+        for (key, a) in self.live_anchors().filter(|(_, a)| near(a)) {
             let width = a.r - a.l;
             if !self.cfg.decor || *key <= 0 || a.deco < 0.02 || width < 150.0 {
                 continue;
