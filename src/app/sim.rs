@@ -157,13 +157,20 @@ impl App {
         if now.duration_since(self.last_fs_check).as_secs_f32() >= 0.5 {
             self.last_fs_check = now;
             // Un écran occupé par une application plein écran est masqué; les autres continuent.
+            // Les fenêtres sont relues ici aussi (même quand tout est masqué), sinon on ne verrait jamais la fin du plein écran.
+            self.refresh_windows();
             let fs = fullscreen_monitor(self.hwnd);
             let mut changed = false;
             for s in &mut self.surfaces {
-                let hide = fs.is_some_and(|m| {
+                // Plein écran: l'application au premier plan, ou n'importe quelle fenêtre visible qui recouvre tout l'écran
+                // (une vidéo en plein écran qui n'a pas le focus, par exemple parce qu'on travaille sur un autre écran).
+                let by_fg = fs.is_some_and(|m| {
                     (m.left == 0 && m.top == 0 && m.right == 0 && m.bottom == 0)
                         || (m.left as f32, m.top as f32, m.right as f32, m.bottom as f32) == s.rect
                 });
+                let (l, t, r, b) = s.rect;
+                let by_window = self.wins.iter().any(|w| w.l <= l + 1.0 && w.t <= t + 1.0 && w.r >= r - 1.0 && w.b >= b - 1.0);
+                let hide = by_fg || by_window;
                 if hide != s.hidden {
                     s.hidden = hide;
                     changed = true;
