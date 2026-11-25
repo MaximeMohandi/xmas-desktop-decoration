@@ -199,7 +199,14 @@ impl App {
         }
         let h = self.h;
         self.debris.retain(|d| d.a > 0.0 && d.y < h);
-        let _ = self.draw();
+        if let Err(e) = self.draw() {
+            // Une erreur de dessin ne doit jamais faire tourner la boucle à vide: on trace une fois.
+            if !self.draw_failed {
+                self.draw_failed = true;
+                let _ = std::fs::write("sneakyxmas.log", format!("draw: {e:?}\n"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(33));
+        }
     }
 
     /// Père Noël qui marche sur la barre des tâches, traîneau qui traverse le haut de l'écran.

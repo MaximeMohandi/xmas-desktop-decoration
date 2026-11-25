@@ -123,25 +123,11 @@ impl App {
     }
 
     /// Tas de neige: forme arrondie qui s'affine aux extrémités, avec une ombre bleutée en bas.
-    pub(crate) unsafe fn draw_pile(&self, a: &Anchor) {
+    pub(crate) unsafe fn draw_pile(&self, key: isize, a: &Anchor) {
         let step = 3usize;
         let base = a.t + 1.0;
-        let mut run: Vec<(f32, f32)> = Vec::new(); // (x, hauteur)
-        let flush = |run: &mut Vec<(f32, f32)>| {
-            if run.len() >= 2 && run.iter().any(|p| p.1 > 0.5) {
-                let top: Vec<(f32, f32)> = run.iter().map(|p| (p.0, a.t - p.1)).collect();
-                if let Some(g) = self.smooth_path(&top, base) {
-                    self.pen.SetColor(&D2D1_COLOR_F { r: 0.97, g: 0.98, b: 1.0, a: 0.98 });
-                    self.ctx.FillGeometry(&g, &self.pen, None);
-                }
-                let shade: Vec<(f32, f32)> = run.iter().map(|p| (p.0, a.t - p.1 * 0.38)).collect();
-                if let Some(g) = self.smooth_path(&shade, base) {
-                    self.pen.SetColor(&D2D1_COLOR_F { r: 0.78, g: 0.86, b: 0.96, a: 0.9 });
-                    self.ctx.FillGeometry(&g, &self.pen, None);
-                }
-            }
-            run.clear();
-        };
+        // Tronçons visibles du tas (interrompus là où une fenêtre au-dessus le recouvre).
+        let mut runs: Vec<Vec<(f32, f32)>> = vec![Vec::new()];
         let mut i = 0;
         while i < a.pile.len() {
             let x = a.l + i as f32 * COL_W;
@@ -152,13 +138,46 @@ impl App {
             let edge = ((x - a.l).min(a.r - x) / 16.0).clamp(0.0, 1.0);
             let taper = edge * edge * (3.0 - 2.0 * edge);
             if covered(&self.wins, a.z, x, a.t - 1.0) {
-                flush(&mut run);
+                if !runs.last().is_some_and(|r| r.is_empty()) {
+                    runs.push(Vec::new());
+                }
             } else {
-                run.push((x, a.pile[i] * taper));
+                runs.last_mut().unwrap().push((x, a.pile[i] * taper));
             }
             i += step;
         }
-        flush(&mut run);
+        runs.retain(|r| r.len() >= 2 && r.iter().any(|p| p.1 > 0.5));
+        // Empreinte de la forme (hauteurs au quart de pixel près): la géométrie n'est refaite que si elle change.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325 ^ a.t.to_bits() as u64;
+        for r in &runs {
+            for p in r {
+                hash = (hash ^ p.0.to_bits() as u64).wrapping_mul(0x100_0000_01b3);
+                hash = (hash ^ (p.1 * 4.0) as u64).wrapping_mul(0x100_0000_01b3);
+            }
+            hash = (hash ^ 0xff).wrapping_mul(0x100_0000_01b3);
+        }
+        let mut cache = self.pile_cache.borrow_mut();
+        if cache.get(&key).map(|c| c.0) != Some(hash) {
+            let geos = runs
+                .iter()
+                .filter_map(|r| {
+                    let top: Vec<(f32, f32)> = r.iter().map(|p| (p.0, a.t - p.1)).collect();
+                    let shade: Vec<(f32, f32)> = r.iter().map(|p| (p.0, a.t - p.1 * 0.38)).collect();
+                    Some((self.smooth_path(&top, base)?, self.smooth_path(&shade, base)?))
+                })
+                .collect();
+            cache.insert(key, (hash, geos));
+        }
+        for (top, shade) in &cache[&key].1 {
+            self.pen.SetColor(&D2D1_COLOR_F { r: 0.97, g: 0.98, b: 1.0, a: 0.98 });
+            self.ctx.FillGeometry(top, &self.pen, None);
+            self.pen.SetColor(&D2D1_COLOR_F { r: 0.78, g: 0.86, b: 0.96, a: 0.9 });
+            self.ctx.FillGeometry(shade, &self.pen, None);
+        }
+        if cache.len() > self.anchors.len() + 4 {
+            let live: Vec<isize> = self.anchors.keys().copied().collect();
+            cache.retain(|k, _| live.contains(k));
+        }
     }
 
     pub(crate) unsafe fn draw_sleigh(&self, x: f32, dir: f32) {
@@ -260,21 +279,17 @@ impl App {
                     self.draw_scene(&[pc(src, rel, 0.0)], a.variant, cx, a.t + 1.0, hh, false, a.deco, a.z, a.t - 1.0);
                 }
             }
+            // Un flocon n'est visible que sur le bureau: jamais devant une fenêtre (ni la barre des tâches).
             let nw = self.wins.len();
             for f in self.flakes.iter().take(SNOW_COUNT[self.cfg.snow.min(3)]) {
-                // Un flocon n'est visible que sur le bureau: jamais devant une fenêtre (ni la barre des tâches).
                 if covered(&self.wins, Some(nw), f.x, f.y) {
                     continue;
                 }
-                let e = D2D1_ELLIPSE {
-                    point: D2D_POINT_2F { x: f.x, y: f.y },
-                    radiusX: f.r,
-                    radiusY: f.r,
-                };
+                let e = D2D1_ELLIPSE { point: D2D_POINT_2F { x: f.x, y: f.y }, radiusX: f.r, radiusY: f.r };
                 self.ctx.FillEllipse(&e, &self.brush);
             }
-            for a in self.anchors.values() {
-                self.draw_pile(a);
+            for (key, a) in self.anchors.iter() {
+                self.draw_pile(*key, a);
             }
             for sp in &self.sparks {
                 let a = sp.life.clamp(0.0, 1.0);

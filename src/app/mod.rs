@@ -10,6 +10,9 @@ pub(crate) struct App {
     pub(crate) ctx: ID2D1DeviceContext,
     pub(crate) brush: ID2D1SolidColorBrush,
     pub(crate) pen: ID2D1SolidColorBrush,
+    pub(crate) draw_failed: bool,
+    /// Géométries des tas, recalculées seulement quand leur forme change.
+    pub(crate) pile_cache: RefCell<HashMap<isize, (u64, Vec<(ID2D1PathGeometry, ID2D1PathGeometry)>)>>,
     pub(crate) factory: ID2D1Factory1,
     pub(crate) round: ID2D1StrokeStyle,
     pub(crate) spr: Sprites,
@@ -130,6 +133,8 @@ impl App {
                 ctx,
                 brush,
                 pen,
+                draw_failed: false,
+                pile_cache: RefCell::new(HashMap::new()),
                 factory: d2d_factory,
                 round,
                 spr,
