@@ -10,6 +10,16 @@ Elle est discrète : les clics passent au travers, et dès qu'un film ou un jeu 
 
 ---
 
+## 📸 Aperçu
+
+![Le bureau sous la neige : village sur la barre des tâches, neige sur le bord des fenêtres](docs/screenshots/desktop.webp)
+
+| Le Père Noël et son traîneau traversent l'écran | Le menu de la zone de notification |
+|---|---|
+| ![Le traîneau en vol au-dessus d'une fenêtre](docs/screenshots/sleigh.webp) | ![Le menu de réglages](docs/screenshots/menu.webp) |
+
+---
+
 ## ✨ Ce que tu vois
 
 - ❄️ **Neige douce** qui tombe sur le bureau, jamais devant tes fenêtres, et s'accumule en petits monticules arrondis sur la barre des tâches et le haut de chaque fenêtre. Déplace une fenêtre : sa neige glisse et tombe.

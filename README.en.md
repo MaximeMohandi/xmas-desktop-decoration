@@ -10,6 +10,16 @@ It stays out of your way: clicks go straight through, and as soon as a movie or 
 
 ---
 
+## 📸 Preview
+
+![The desktop under the snow: a village on the taskbar, snow along the window edges](docs/screenshots/desktop.webp)
+
+| Santa and his sleigh fly across the screen | The notification area menu |
+|---|---|
+| ![The sleigh in flight above a window](docs/screenshots/sleigh.webp) | ![The settings menu](docs/screenshots/menu.webp) |
+
+---
+
 ## ✨ What you'll see
 
 - ❄️ **Soft snow** falling over the desktop, never in front of your windows, piling up in rounded little mounds on the taskbar and on top of each window. Move a window and its snow slides off and falls.
